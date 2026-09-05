@@ -33,6 +33,11 @@ public class RagService {
     private static final int CHUNK_OVERLAP = 50;
     /** 检索返回的相似块数量 top-k */
     private static final int TOP_K = 3;
+    /**
+     * 单次 embedding 请求最多放几条：DashScope text-embedding-v3 限制单请求 ≤ 10，
+     * 超出返回 400 InvalidParameter（9/5 实测踩坑）。留 2 条余量。
+     */
+    private static final int EMBED_BATCH_SIZE = 8;
 
     private final VectorStore vectorStore;
     private final ChatClient chatClient;
@@ -52,7 +57,12 @@ public class RagService {
                         .metadata("source", source) // 记录来源，方便前端展示出处
                         .build())
                 .toList();
-        vectorStore.add(docs); // 内部完成 embedding + 插入
+        // 分批入库：vectorStore.add() 会对这批 doc 一次性调 embedding 接口，
+        // 超过 10 条就会撞上百炼的限制 → 每批最多 EMBED_BATCH_SIZE 条
+        for (int i = 0; i < docs.size(); i += EMBED_BATCH_SIZE) {
+            List<Document> batch = docs.subList(i, Math.min(i + EMBED_BATCH_SIZE, docs.size()));
+            vectorStore.add(batch);
+        }
         return docs.size();
     }
 

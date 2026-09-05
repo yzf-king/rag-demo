@@ -12,6 +12,8 @@ import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore.PgDistanceType;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore.PgIndexType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -38,8 +40,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @EnableConfigurationProperties(LlmProperties.class)
 public class LlmConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(LlmConfig.class);
+
     @Bean
     public OpenAiChatModel chatModel(LlmProperties props) {
+        // 诊断日志：只报告 key 是否读到，绝不打印 key 本身
+        logKey("chat(DeepSeek)", props.getChat().getApiKey());
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(props.getChat().getBaseUrl())
                 .apiKey(props.getChat().getApiKey())
@@ -54,6 +60,7 @@ public class LlmConfig {
 
     @Bean
     public OpenAiEmbeddingModel embeddingModel(LlmProperties props) {
+        logKey("embedding(DashScope)", props.getEmbedding().getApiKey());
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(props.getEmbedding().getBaseUrl())
                 .apiKey(props.getEmbedding().getApiKey())
@@ -76,5 +83,11 @@ public class LlmConfig {
                 .distanceType(PgDistanceType.COSINE_DISTANCE)
                 .initializeSchema(true) // 启动时自动建表（CREATE TABLE IF NOT EXISTS）
                 .build();
+    }
+
+    /** 只打印"读到没有 + 长度"，防止 key 泄露到日志 */
+    private void logKey(String label, String key) {
+        boolean ok = key != null && !key.isBlank();
+        log.info("{} API key: {}（长度 {}）", label, ok ? "已读到" : "【为空！】", ok ? key.length() : 0);
     }
 }
