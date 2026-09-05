@@ -13,6 +13,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 
 import com.example.ragdemo.web.RagController;
+import reactor.core.publisher.Flux;
 
 /**
  * RAG 核心服务：入库（ingest）+ 问答（ask）两条链
@@ -20,8 +21,8 @@ import com.example.ragdemo.web.RagController;
  * 离线链：ingest —— 文本 → 切分 chunk → 向量化 → 存入 pgvector
  * 在线链：ask   —— 问题 → 向量化 → 相似度检索 top-k → 拼 prompt → LLM 生成
  *
- * 切分这里先用最朴素的按段落/字符数切（今天的最小切片只求跑通），
- * 9/4 会替换成正经的 chunking 策略并对比效果。
+ * 切分目前用朴素的按段落/字符数切（最小版本先跑通），
+ * 后续替换成正经 chunking 策略并对比效果（见 W2任务清单 9/6）。
  */
 @Service
 public class RagService {
@@ -43,49 +44,76 @@ public class RagService {
     }
 
     /** 入库：文本 → 切分 → 向量化 → 存库，返回切出的 chunk 数 */
-    public int ingest(String text) {
+    public int ingest(String text, String source) {
         List<String> chunks = split(text);
         List<Document> docs = chunks.stream()
                 .map(c -> Document.builder()
                         .text(c)
-                        .metadata("source", "inline-text")
+                        .metadata("source", source) // 记录来源，方便前端展示出处
                         .build())
                 .toList();
-        vectorStore.add(docs); // 内部完成 embedding + 插入，打印日志能看到发了多少次 embedding 请求
+        vectorStore.add(docs); // 内部完成 embedding + 插入
         return docs.size();
     }
 
-    /** 问答：检索 + 生成，返回答案和命中的原始片段（面试展示"答案有出处"的关键） */
+    /** 同步问答（curl 调试用；页面走下面的流式接口） */
     public RagController.AskResult ask(String question) {
-        // 1. 相似度检索：问题自动向量化，在库里找最接近的 TOP_K 块
-        List<Document> hits = vectorStore.similaritySearch(
-                SearchRequest.builder().query(question).topK(TOP_K).build());
-
+        List<Document> hits = search(question);
         if (hits.isEmpty()) {
-            return new RagController.AskResult("知识库还是空的，先调 POST /api/knowledge 灌入文本。", List.of());
+            return new RagController.AskResult("知识库还是空的，先调 POST /api/knowledge 或上传文件。", List.of());
         }
+        String answer = generate(hits, question);
+        return new RagController.AskResult(answer, hits.stream().map(Document::getText).toList());
+    }
 
-        // 2. 拼 prompt：system 限定"只依据资料回答"，检索结果带编号贴给模型
+    /**
+     * 流式问答（SSE 用）：先检索（同步，结果要拼进 prompt），
+     * 生成阶段用 reactor Flux 逐 token 吐给前端逐字显示。
+     * 返回结构 = 命中的原文块（引用展示）+ token 流。
+     */
+    public StreamAskResult streamAsk(String question) {
+        List<Document> hits = search(question);
+        if (hits.isEmpty()) {
+            return new StreamAskResult(List.of(), Flux.just("知识库还是空的，先上传一份文档再提问吧。"));
+        }
+        // 拼 prompt 的公共逻辑（同步/流式一致）
+        String system = "你是一个知识库问答助手。只依据下面提供的资料回答问题，"
+                + "可以引用资料编号如 [资料1]。如果资料中没有相关信息，直接回答\"资料中没有相关信息\"，不要编造。";
+        String userText = buildUserText(hits, question);
+        UserMessage user = new UserMessage(userText);
+
+        // .stream().content() 返回 Flux<String>，已内部过滤无文本的收尾块
+        Flux<String> tokens = chatClient.prompt(new Prompt(List.of(new SystemMessage(system), user)))
+                .stream()
+                .content();
+        return new StreamAskResult(hits.stream().map(Document::getText).toList(), tokens);
+    }
+
+    /** 检索公共步骤：问题自动向量化，在库里找最接近的 TOP_K 块 */
+    private List<Document> search(String question) {
+        return vectorStore.similaritySearch(
+                SearchRequest.builder().query(question).topK(TOP_K).build());
+    }
+
+    /** 拼 prompt：检索结果带编号贴给模型（和 ask/streamAsk 共用，保证行为一致） */
+    private String buildUserText(List<Document> hits, String question) {
         StringBuilder context = new StringBuilder();
         for (int i = 0; i < hits.size(); i++) {
             context.append("[资料").append(i + 1).append("] ").append(hits.get(i).getText()).append("\n\n");
         }
+        return "资料：\n" + context + "\n问题：" + question;
+    }
+
+    /** 同步生成：ChatClient .call() 一次性返回完整回答 */
+    private String generate(List<Document> hits, String question) {
         String system = "你是一个知识库问答助手。只依据下面提供的资料回答问题，"
                 + "可以引用资料编号如 [资料1]。如果资料中没有相关信息，直接回答\"资料中没有相关信息\"，不要编造。";
-        UserMessage user = new UserMessage("资料：\n" + context + "\n问题：" + question);
-
-        // 3. 生成（先同步，9/5 改流式 SSE）
-        // 1.1.x 里 .call() 返回 CallResponseSpec，.content() 直接取纯文本回答
-        String answer = chatClient.prompt(new Prompt(List.of(new SystemMessage(system), user))).call().content();
-
-        // 4. 把命中的原文块一并返回，前端可展示出处
-        List<String> sources = hits.stream().map(Document::getText).toList();
-        return new RagController.AskResult(answer, sources);
+        return chatClient.prompt(new Prompt(List.of(
+                new SystemMessage(system), new UserMessage(buildUserText(hits, question))))).call().content();
     }
 
     /**
-     * 朴素切分（今天先用它跑通全链路，勿深究）：
-     * 按空行切成段落 → 超长段落再按字符数补切 → 相邻块保留 overlap。
+     * 朴素切分（先跑通，勿深究）：按空行切成段落 → 超长段落再按字符数补切 → 相邻块保留 overlap。
      */
     private List<String> split(String text) {
         List<String> chunks = new ArrayList<>();
@@ -102,4 +130,7 @@ public class RagService {
         }
         return chunks;
     }
+
+    /** 流式问答结果：引用片段 + token 流 */
+    public record StreamAskResult(List<String> sources, Flux<String> tokens) {}
 }

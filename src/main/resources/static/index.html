@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库问答 · RAG Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", -apple-system, sans-serif;
+    background: #f5f6fa; color: #2d3436; max-width: 860px; margin: 0 auto; padding: 24px 16px 60px;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #636e72; font-size: 13px; margin-bottom: 24px; }
+  .card { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .card h2 { font-size: 15px; margin-bottom: 12px; color: #2d3436; }
+
+  /* 上传区 */
+  .upload-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  input[type=file] { font-size: 13px; }
+  button { background: #0984e3; color: #fff; border: none; border-radius: 6px;
+           padding: 8px 18px; font-size: 14px; cursor: pointer; }
+  button:hover { background: #0a75c9; }
+  button:disabled { background: #b2bec3; cursor: not-allowed; }
+  .status { font-size: 13px; color: #636e72; margin-top: 10px; min-height: 18px; }
+  .status.ok { color: #00b894; }
+  .status.err { color: #d63031; }
+
+  /* 问答区 */
+  .chat-row { display: flex; gap: 10px; }
+  #question { flex: 1; padding: 10px 12px; border: 1px solid #dfe6e9; border-radius: 6px;
+              font-size: 14px; outline: none; }
+  #question:focus { border-color: #0984e3; }
+  .answer-box { background: #f0f4ff; border-left: 4px solid #0984e3; border-radius: 0 8px 8px 0;
+                padding: 14px 16px; margin-top: 14px; min-height: 80px; font-size: 15px;
+                line-height: 1.8; white-space: pre-wrap; }
+  .answer-box.empty { color: #b2bec3; background: #fafafa; border-left-color: #dfe6e9; }
+  .caret { display: inline-block; width: 7px; height: 16px; background: #0984e3;
+           vertical-align: -2px; animation: blink .8s infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 引用区 */
+  .sources { margin-top: 12px; }
+  .sources summary { cursor: pointer; font-size: 13px; color: #0984e3; }
+  .source-item { font-size: 12.5px; color: #636e72; background: #fafafa; border: 1px solid #eee;
+                 border-radius: 6px; padding: 8px 10px; margin-top: 6px; line-height: 1.6; }
+  .err-box { margin-top: 12px; font-size: 13px; color: #d63031; background: #ffeaea;
+             border-radius: 6px; padding: 10px 12px; }
+</style>
+</head>
+<body>
+  <h1>📚 知识库问答</h1>
+  <div class="sub">上传一份 .txt / .md 文档 → 向我提问，答案基于你上传的资料（可溯源，不瞎编）</div>
+
+  <!-- ① 上传区 -->
+  <div class="card">
+    <h2>① 上传知识文档</h2>
+    <div class="upload-row">
+      <input type="file" id="fileInput" accept=".txt,.md">
+      <button id="uploadBtn" onclick="upload()">上传入库</button>
+    </div>
+    <div class="status" id="uploadStatus"></div>
+  </div>
+
+  <!-- ② 问答区 -->
+  <div class="card">
+    <h2>② 提问</h2>
+    <div class="chat-row">
+      <input id="question" placeholder="例如：文档里说退款政策是什么？" onkeydown="if(event.key==='Enter')ask()">
+      <button id="askBtn" onclick="ask()">提问</button>
+    </div>
+    <div class="answer-box empty" id="answerBox">回答会逐字显示在这里…</div>
+    <div class="err-box" id="errBox" style="display:none"></div>
+    <details class="sources" id="sourcesBox" style="display:none">
+      <summary>📎 引用的资料片段</summary>
+      <div id="sourcesList"></div>
+    </details>
+  </div>
+
+<script>
+let es = null; // 当前提问的 EventSource
+
+/** 上传文件：multipart/form-data → POST /api/knowledge/upload */
+async function upload() {
+  const file = document.getElementById('fileInput').files[0];
+  const status = document.getElementById('uploadStatus');
+  if (!file) { status.className = 'status err'; status.textContent = '请先选择文件（.txt 或 .md）'; return; }
+
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  status.className = 'status'; status.textContent = '上传并切分入库中…（文档越长越久，embedding 要逐块调接口）';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/api/knowledge/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+    status.className = 'status ok';
+    status.textContent = `✅ ${file.name} 已入库，切出 ${data.chunks} 个片段。现在可以提问了！`;
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 上传失败：' + e.message + '（只支持 UTF-8 编码的 .txt/.md）';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** 提问：EventSource 连接 SSE 流式接口，逐字显示 */
+function ask() {
+  const q = document.getElementById('question').value.trim();
+  if (!q) return;
+  if (es) { es.close(); es = null; } // 有新提问先断掉旧的
+
+  const answerBox = document.getElementById('answerBox');
+  const errBox = document.getElementById('errBox');
+  const sourcesBox = document.getElementById('sourcesBox');
+  const sourcesList = document.getElementById('sourcesList');
+  const askBtn = document.getElementById('askBtn');
+
+  answerBox.className = 'answer-box';
+  answerBox.textContent = '';
+  errBox.style.display = 'none';
+  sourcesList.innerHTML = '';
+  sourcesBox.style.display = 'none';
+  askBtn.disabled = true;
+
+  // SSE 用 GET，问题走 URL 参数（EventSource 自动处理重连，这里手动管理）
+  es = new EventSource('/api/chat/stream?question=' + encodeURIComponent(q));
+
+  // 命中的资料片段（生成前就推过来）
+  es.addEventListener('source', (e) => {
+    sourcesBox.style.display = 'block';
+    const div = document.createElement('div');
+    div.className = 'source-item';
+    div.textContent = e.data;
+    sourcesList.appendChild(div);
+  });
+
+  // 逐 token 追加到答案
+  es.addEventListener('token', (e) => {
+    answerBox.textContent += e.data;
+  });
+
+  // 服务端报错（key 没配 / 服务异常）
+  es.addEventListener('fatal', (e) => {
+    errBox.style.display = 'block';
+    errBox.textContent = '⚠️ ' + e.data;
+    finish();
+  });
+
+  // 连接结束（正常完成或网络断开）：EventSource 的 error 事件没有 data
+  es.onerror = () => finish();
+}
+
+function finish() {
+  if (!es) return;
+  es.close();
+  es = null;
+  document.getElementById('askBtn').disabled = false;
+  const answerBox = document.getElementById('answerBox');
+  if (answerBox.textContent === '') answerBox.textContent = '（没有收到回答）';
+}
+</script>
+</body>
+</html>
