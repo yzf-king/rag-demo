@@ -36,6 +36,8 @@ llm:
     model: deepseek-chat
     api-key: ${DEEPSEEK_API_KEY:}
   embedding:
-    base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    # 注意：base-url 不要带 /v1！Spring AI 客户端会自动拼 /v1/embeddings，
+    # 写全了就会变成 .../v1/v1/embeddings → 404（9/5 实测踩过的坑）
+    base-url: https://dashscope.aliyuncs.com/compatible-mode
     model: text-embedding-v3
     api-key: ${DASHSCOPE_API_KEY:}
