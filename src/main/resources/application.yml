@@ -27,6 +27,12 @@ spring:
       - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
       - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
 
+# RAG 切分/检索参数（调参对比实验直接改这里重启，见 docs/evaluation.md）
+rag:
+  chunk-size: 300      # 单块最大字符数：太小→上下文断裂；太大→一块混多个主题
+  chunk-overlap: 50    # 相邻块重叠：避免一句话从中间被切开
+  top-k: 3             # 检索取回几块：太大→塞进无关资料；太小→漏掉相关块
+
 # API Key 全部走环境变量，不进代码、不进 Git（同 W1 约定）
 #   setx DEEPSEEK_API_KEY "sk-xxx"    # 已配置（W1 用过）
 #   setx DASHSCOPE_API_KEY "sk-xxx"   # 阿里百炼，本作品新增，见 W2任务清单.md

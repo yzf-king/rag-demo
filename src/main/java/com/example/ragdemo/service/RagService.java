@@ -3,6 +3,7 @@ package com.example.ragdemo.service;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -27,12 +28,21 @@ import reactor.core.publisher.Flux;
 @Service
 public class RagService {
 
-    /** 单块最大字符数（中文场景粗略值，后续调参对比用） */
-    private static final int CHUNK_SIZE = 300;
+    /**
+     * 切分/检索参数全部外置到 application.yml（rag.*），改参数不用动代码——
+     * 调参对比实验（9/7 评估）就是改 yml 重启，重复 N 次也不累。
+     */
+    @Value("${rag.chunk-size:300}")
+    private int chunkSize;
+
     /** 相邻块重叠字符数：避免恰好把一句话从中间切开 */
-    private static final int CHUNK_OVERLAP = 50;
+    @Value("${rag.chunk-overlap:50}")
+    private int chunkOverlap;
+
     /** 检索返回的相似块数量 top-k */
-    private static final int TOP_K = 3;
+    @Value("${rag.top-k:3}")
+    private int topK;
+
     /**
      * 单次 embedding 请求最多放几条：DashScope text-embedding-v3 限制单请求 ≤ 10，
      * 超出返回 400 InvalidParameter（9/5 实测踩坑）。留 2 条余量。
@@ -99,10 +109,10 @@ public class RagService {
         return new StreamAskResult(hits.stream().map(Document::getText).toList(), tokens);
     }
 
-    /** 检索公共步骤：问题自动向量化，在库里找最接近的 TOP_K 块 */
+    /** 检索公共步骤：问题自动向量化，在库里找最接近的 topK 块 */
     private List<Document> search(String question) {
         return vectorStore.similaritySearch(
-                SearchRequest.builder().query(question).topK(TOP_K).build());
+                SearchRequest.builder().query(question).topK(topK).build());
     }
 
     /** 拼 prompt：检索结果带编号贴给模型（和 ask/streamAsk 共用，保证行为一致） */
@@ -130,11 +140,11 @@ public class RagService {
         for (String para : text.split("\\n\\s*\\n")) {
             String p = para.trim();
             if (p.isEmpty()) continue;
-            while (p.length() > CHUNK_SIZE) {
-                int cut = p.lastIndexOf('。', CHUNK_SIZE);
-                if (cut < CHUNK_SIZE / 2) cut = CHUNK_SIZE; // 找不到句号就硬切
+            while (p.length() > chunkSize) {
+                int cut = p.lastIndexOf('。', chunkSize);
+                if (cut < chunkSize / 2) cut = chunkSize; // 找不到句号就硬切
                 chunks.add(p.substring(0, cut));
-                p = p.substring(Math.max(0, cut - CHUNK_OVERLAP));
+                p = p.substring(Math.max(0, cut - chunkOverlap));
             }
             chunks.add(p);
         }
