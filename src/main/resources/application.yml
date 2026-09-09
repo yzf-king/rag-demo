@@ -1,5 +1,8 @@
 server:
   port: 8081
+  # 错误响应带 message 字段，前端才能显示"为什么失败"（如参数非法原因）
+  error:
+    include-message: always
 
 # PostgreSQL + pgvector（Docker 容器 rag-pg）
 # 启动方式：docker run --name rag-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \

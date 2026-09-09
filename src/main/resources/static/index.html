@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>知识库问答 · RAG Demo</title>
+<title>知识库问答 · RAG Demo（含评测台）</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -16,9 +16,7 @@
           box-shadow: 0 1px 4px rgba(0,0,0,.06); }
   .card h2 { font-size: 15px; margin-bottom: 12px; color: #2d3436; }
 
-  /* 上传区 */
-  .upload-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  input[type=file] { font-size: 13px; }
+  /* 通用控件 */
   button { background: #0984e3; color: #fff; border: none; border-radius: 6px;
            padding: 8px 18px; font-size: 14px; cursor: pointer; }
   button:hover { background: #0a75c9; }
@@ -26,8 +24,28 @@
   .status { font-size: 13px; color: #636e72; margin-top: 10px; min-height: 18px; }
   .status.ok { color: #00b894; }
   .status.err { color: #d63031; }
+  input[type=file] { font-size: 13px; }
 
-  /* 问答区 */
+  /* ① 检索参数区 */
+  .chip-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip { background: #fff; color: #2d3436; border: 1.5px solid #dfe6e9; border-radius: 16px;
+          padding: 5px 14px; font-size: 13px; }
+  .chip:hover { border-color: #0984e3; }
+  .chip.active { background: #0984e3; color: #fff; border-color: #0984e3; }
+  .cfg-fields { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  .cfg-field { display: flex; flex-direction: column; gap: 4px; }
+  .cfg-field label { font-size: 12px; color: #636e72; }
+  .cfg-field input { width: 110px; padding: 6px 8px; border: 1px solid #dfe6e9; border-radius: 6px;
+                     font-size: 13px; outline: none; }
+  .cfg-field input:focus { border-color: #0984e3; }
+  .cfg-note { font-size: 12px; color: #b2bec3; margin-top: 10px; line-height: 1.7; }
+  .clear-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding-top: 12px;
+               border-top: 1px dashed #dfe6e9; }
+  .btn-danger { background: #d63031; }
+  .btn-danger:hover { background: #c0392b; }
+
+  /* 上传/问答区 */
+  .upload-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .chat-row { display: flex; gap: 10px; }
   #question { flex: 1; padding: 10px 12px; border: 1px solid #dfe6e9; border-radius: 6px;
               font-size: 14px; outline: none; }
@@ -40,22 +58,68 @@
            vertical-align: -2px; animation: blink .8s infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* 引用区 */
+  /* 引用区（聊天 + 评测台共用） */
   .sources { margin-top: 12px; }
   .sources summary { cursor: pointer; font-size: 13px; color: #0984e3; }
-  .source-item { font-size: 12.5px; color: #636e72; background: #fafafa; border: 1px solid #eee;
-                 border-radius: 6px; padding: 8px 10px; margin-top: 6px; line-height: 1.6; }
+  .source-item, .ev-src { font-size: 12.5px; color: #636e72; background: #fafafa; border: 1px solid #eee;
+                          border-radius: 6px; padding: 8px 10px; margin-top: 6px; line-height: 1.6;
+                          white-space: pre-wrap; }
   .err-box { margin-top: 12px; font-size: 13px; color: #d63031; background: #ffeaea;
              border-radius: 6px; padding: 10px 12px; }
+
+  /* ④ 评测台 */
+  .eval-btns { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .ev-item { border: 1px solid #eee; border-radius: 8px; padding: 12px 14px; margin-top: 12px; }
+  .ev-head { font-size: 14px; font-weight: 600; margin-bottom: 4px; line-height: 1.6; }
+  .ev-tag { display: inline-block; font-size: 11px; color: #0984e3; background: #eef6ff;
+            border-radius: 4px; padding: 1px 6px; margin-right: 6px; font-weight: 400; vertical-align: 1px; }
+  .ev-tag.ext { color: #6c5ce7; background: #f3f0ff; }
+  .ev-expect { font-size: 12px; color: #b2bec3; margin-bottom: 8px; }
+  .ev-answer { background: #f0f4ff; border-left: 4px solid #0984e3; border-radius: 0 6px 6px 0;
+               padding: 10px 12px; font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+  .ev-answer.refuse { background: #eefaf5; border-left-color: #00b894; } /* 正确拒答标记 */
 </style>
 </head>
 <body>
-  <h1>📚 知识库问答</h1>
-  <div class="sub">上传一份 .txt / .md 文档 → 向我提问，答案基于你上传的资料（可溯源，不瞎编）</div>
+  <h1>📚 知识库问答 · RAG Demo</h1>
+  <div class="sub">上传 .txt / .md 文档 → 提问，回答基于资料（可溯源、不瞎编）；内置调参评测台可对比不同切分/检索参数的效果</div>
 
-  <!-- ① 上传区 -->
+  <!-- ① 检索参数（评测用） -->
   <div class="card">
-    <h2>① 上传知识文档</h2>
+    <h2>⚙️ ① 检索参数（A/B/C 预设 or 自定义）</h2>
+    <div class="chip-row">
+      <button class="chip active" id="chipA" onclick="applyPreset('A')">A · 基线 300/50/3</button>
+      <button class="chip" id="chipB" onclick="applyPreset('B')">B · 小块 150/30/3</button>
+      <button class="chip" id="chipC" onclick="applyPreset('C')">C · 大块大k 600/100/5</button>
+      <button class="chip" id="chipCustom" onclick="applyPreset('CUSTOM')">自定义</button>
+    </div>
+    <div class="cfg-fields">
+      <div class="cfg-field">
+        <label>chunk-size（切块字符数）</label>
+        <input type="number" id="cfgCs" value="300" min="50" max="2000" step="10">
+      </div>
+      <div class="cfg-field">
+        <label>chunk-overlap（重叠字符）</label>
+        <input type="number" id="cfgCo" value="50" min="0" max="500" step="5">
+      </div>
+      <div class="cfg-field">
+        <label>top-k（取回片段数）</label>
+        <input type="number" id="cfgK" value="3" min="1" max="10" step="1">
+      </div>
+    </div>
+    <div class="cfg-note">
+      生效时机：<b>chunk-size / chunk-overlap 在上传时生效</b>（决定怎么切），<b>top-k 在提问时生效</b>（决定检索取回几段）。
+      换切分参数 = 换一批数据 → 先点下方「清空知识库」再重新上传，否则新旧 chunk 混在库里，结果作废。
+    </div>
+    <div class="clear-row">
+      <button class="btn-danger" id="clearBtn" onclick="clearKnowledge()">🗑 清空知识库</button>
+      <span class="status" id="clearStatus"></span>
+    </div>
+  </div>
+
+  <!-- ② 上传区 -->
+  <div class="card">
+    <h2>📤 ② 上传知识文档</h2>
     <div class="upload-row">
       <input type="file" id="fileInput" accept=".txt,.md">
       <button id="uploadBtn" onclick="upload()">上传入库</button>
@@ -63,9 +127,9 @@
     <div class="status" id="uploadStatus"></div>
   </div>
 
-  <!-- ② 问答区 -->
+  <!-- ③ 问答区 -->
   <div class="card">
-    <h2>② 提问</h2>
+    <h2>💬 ③ 提问（流式）</h2>
     <div class="chat-row">
       <input id="question" placeholder="例如：文档里说退款政策是什么？" onkeydown="if(event.key==='Enter')ask()">
       <button id="askBtn" onclick="ask()">提问</button>
@@ -78,27 +142,113 @@
     </details>
   </div>
 
-<script>
-let es = null; // 当前提问的 EventSource
+  <!-- ④ 评测台 -->
+  <div class="card">
+    <h2>🧪 ④ 评测台：一键跑评估题</h2>
+    <div class="eval-btns">
+      <button id="evalBaseBtn" onclick="runEval('base')">跑基础题 Q1–Q5</button>
+      <button id="evalExtBtn" onclick="runEval('ext')">跑扩展题 Q6–Q8</button>
+      <button id="evalAllBtn" onclick="runEval('all')">跑全部 Q1–Q8</button>
+    </div>
+    <div class="cfg-note">
+      题库：Q1–Q5 针对基础版 <code>sample-knowledge.md</code>（5 节）；Q6–Q8 针对扩展版 <code>sample-knowledge-extended.md</code>（16 节）。
+      每题展示 📌 预期结果 + 回答 + 引用片段——对照预期看「引用对不对、回答对不对」。
+      Q4 是「库外拒答」题，回答含"资料中没有相关信息"会标绿。
+      跑完一组记得切到下一配置重跑，对比就出来了。
+    </div>
+    <div class="status" id="evalStatus"></div>
+    <div id="evalList"></div>
+  </div>
 
-/** 上传文件：multipart/form-data → POST /api/knowledge/upload */
+<script>
+let es = null;             // 当前提问的 EventSource
+let evalRunning = false;   // 评测台是否在跑（防止重复点）
+
+/* ================= ① 检索参数 ================= */
+
+// 预设定义：chunk-size / chunk-overlap / top-k
+const PRESETS = {
+  A:       { label: 'A', cs: 300, co: 50, k: 3 },
+  B:       { label: 'B', cs: 150, co: 30, k: 3 },
+  C:       { label: 'C', cs: 600, co: 100, k: 5 },
+  CUSTOM:  { label: 'CUSTOM' }
+};
+
+/** 选中预设：把参数填进三个输入框 + 高亮对应按钮 */
+function applyPreset(name) {
+  const p = PRESETS[name];
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  document.getElementById('chip' + (name === 'CUSTOM' ? 'Custom' : name)).classList.add('active');
+  if (name !== 'CUSTOM') {
+    document.getElementById('cfgCs').value = p.cs;
+    document.getElementById('cfgCo').value = p.co;
+    document.getElementById('cfgK').value = p.k;
+  }
+}
+
+/** 手动改任意输入框 → 视为自定义配置 */
+['cfgCs', 'cfgCo', 'cfgK'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => applyPreset('CUSTOM'));
+});
+
+/** 读取当前生效配置（返回数字） */
+function currentCfg() {
+  return {
+    cs: Number(document.getElementById('cfgCs').value) || 300,
+    co: Number(document.getElementById('cfgCo').value) || 50,
+    k:  Number(document.getElementById('cfgK').value) || 3
+  };
+}
+
+/** 清空知识库：切配置/换语料前必须先做（等价 evaluation.md 里的 TRUNCATE） */
+async function clearKnowledge() {
+  const cfg = currentCfg();
+  const ok = confirm('确定清空知识库吗？\n\n当前 chunk=' + cfg.cs + '/overlap=' + cfg.co +
+    '。清空后请重新上传语料（切分参数在上传时生效），否则旧 chunk 混检，实验作废。');
+  if (!ok) return;
+  const status = document.getElementById('clearStatus');
+  const btn = document.getElementById('clearBtn');
+  btn.disabled = true;
+  status.className = 'status';
+  status.textContent = '清空中…';
+  try {
+    const res = await fetch('/api/knowledge/clear', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+    status.className = 'status ok';
+    status.textContent = '✅ 已清空 ' + data.cleared + ' 个片段。请重新上传语料再提问。';
+  } catch (e) {
+    status.className = 'status err';
+    status.textContent = '❌ 清空失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ================= ② 上传 ================= */
+
+/** 上传文件：multipart/form-data → POST /api/knowledge/upload（带上当前 chunk 参数） */
 async function upload() {
   const file = document.getElementById('fileInput').files[0];
   const status = document.getElementById('uploadStatus');
   if (!file) { status.className = 'status err'; status.textContent = '请先选择文件（.txt 或 .md）'; return; }
 
+  const cfg = currentCfg();
   const btn = document.getElementById('uploadBtn');
   btn.disabled = true;
-  status.className = 'status'; status.textContent = '上传并切分入库中…（文档越长越久，embedding 要逐块调接口）';
+  status.className = 'status';
+  status.textContent = '上传并按 chunk=' + cfg.cs + '/overlap=' + cfg.co + ' 切分入库中…（embedding 要逐批调接口，请稍候）';
 
   const fd = new FormData();
   fd.append('file', file);
+  fd.append('chunkSize', String(cfg.cs));   // 空则服务端回落 yml 默认；这里永远显式传
+  fd.append('chunkOverlap', String(cfg.co));
   try {
     const res = await fetch('/api/knowledge/upload', { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
     status.className = 'status ok';
-    status.textContent = `✅ ${file.name} 已入库，切出 ${data.chunks} 个片段。现在可以提问了！`;
+    status.textContent = `✅ ${file.name} 已入库（chunk=${cfg.cs}/overlap=${cfg.co}），切出 ${data.chunks} 个片段。可以提问了！`;
   } catch (e) {
     status.className = 'status err';
     status.textContent = '❌ 上传失败：' + e.message + '（只支持 UTF-8 编码的 .txt/.md）';
@@ -107,7 +257,9 @@ async function upload() {
   }
 }
 
-/** 提问：EventSource 连接 SSE 流式接口，逐字显示 */
+/* ================= ③ 问答（流式） ================= */
+
+/** 提问：EventSource 连接 SSE 流式接口，逐字显示；top-k 随 URL 参数走当前配置 */
 function ask() {
   const q = document.getElementById('question').value.trim();
   if (!q) return;
@@ -127,7 +279,8 @@ function ask() {
   askBtn.disabled = true;
 
   // SSE 用 GET，问题走 URL 参数（EventSource 自动处理重连，这里手动管理）
-  es = new EventSource('/api/chat/stream?question=' + encodeURIComponent(q));
+  es = new EventSource('/api/chat/stream?question=' + encodeURIComponent(q)
+    + '&topK=' + currentCfg().k);
 
   // 命中的资料片段（生成前就推过来）
   es.addEventListener('source', (e) => {
@@ -161,6 +314,125 @@ function finish() {
   document.getElementById('askBtn').disabled = false;
   const answerBox = document.getElementById('answerBox');
   if (answerBox.textContent === '') answerBox.textContent = '（没有收到回答）';
+}
+
+/* ================= ④ 评测台 ================= */
+
+// 评估题库：与 docs/evaluation.md 保持一致。
+// Q1–Q5 针对 sample-knowledge.md（5 节基础语料）；Q6–Q8 针对 sample-knowledge-extended.md（16 节扩展语料）
+const EVAL_Q = [
+  { no: 'Q1', scope: 'base', text: '试用期多久？转正要评估哪些内容？',
+    expect: '三个月试用期；转正评估看目标完成/协作/价值观（单段内基础检索）' },
+  { no: 'Q2', scope: 'base', text: '出差回来几天内必须交报销单？住宿每晚上限多少？',
+    expect: '14 天内提交；一线城市 500 元/晚（数字精确性）' },
+  { no: 'Q3', scope: 'base', text: '我不想每天去公司坐班，能在家办公吗？',
+    expect: '句中无"远程/灵活办公"字样 → 考 embedding 语义检索是否命中；答案：每周最多 2 天远程' },
+  { no: 'Q4', scope: 'base', text: '公司裁员会赔几个月工资？',
+    expect: '手册没有裁员赔偿规则 → 必须"资料中没有相关信息"，不得编数字（幻觉底线）' },
+  { no: 'Q5', scope: 'base', text: '两万块的培训费用公司怎么报销？',
+    expect: '手册只说 2000 元内规则 → 只答 2000 元内规则或明说没有大额规则，不得编 2 万档' },
+  { no: 'Q6', scope: 'ext', text: '公司兴趣小组一年能申请多少钱？',
+    expect: '每季度上限 500 元（扩展版 §16）；防错引成差旅"500 元住宿"（数字干扰）' },
+  { no: 'Q7', scope: 'ext', text: '试用期能申请远程办公吗？',
+    expect: '不能——扩展版 §8 末句"试用期内不开放"（细节考位）' },
+  { no: 'Q8', scope: 'ext', text: '我得了大病能休多久？',
+    expect: '医疗期最长 12 个月（扩展版 §5；跨段检索）' }
+];
+
+/** 跑一组评估题：按当前 top-k 逐题同步问答，每题展示 预期/回答/引用片段 */
+async function runEval(scope) {
+  if (evalRunning) return;
+  const list = EVAL_Q.filter(item => scope === 'all' || item.scope === scope);
+  const status = document.getElementById('evalStatus');
+  const listBox = document.getElementById('evalList');
+  const btns = ['evalBaseBtn', 'evalExtBtn', 'evalAllBtn'].map(id => document.getElementById(id));
+  const topK = currentCfg().k;
+
+  evalRunning = true;
+  btns.forEach(b => b.disabled = true);
+  listBox.innerHTML = '';
+  status.className = 'status';
+  status.textContent = '正在提问第 1/' + list.length + ' 题（top-k=' + topK + '）…';
+
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    status.textContent = '正在提问第 ' + (i + 1) + '/' + list.length + ' 题：' + item.text;
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: item.text, topK: topK })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+      listBox.appendChild(buildEvalItem(item, data.answer, data.sources || []));
+    } catch (e) {
+      listBox.appendChild(buildEvalError(item, e.message));
+    }
+  }
+
+  status.className = 'status ok';
+  status.textContent = '✅ 完成 ' + list.length + ' 题。对照每题 📌 预期判断命中与回答质量，可切换配置重跑对比。';
+  evalRunning = false;
+  btns.forEach(b => b.disabled = false);
+}
+
+/** 构造一题的展示块：标签 + 题目 + 预期 + 回答 + 引用片段（全部用 textContent，防注入） */
+function buildEvalItem(item, answer, sources) {
+  const box = document.createElement('div');
+  box.className = 'ev-item';
+
+  const head = document.createElement('div');
+  head.className = 'ev-head';
+  const tag = document.createElement('span');
+  tag.className = 'ev-tag' + (item.scope === 'ext' ? ' ext' : '');
+  tag.textContent = item.scope === 'ext' ? '扩展' : '基础';
+  const title = document.createElement('span');
+  title.textContent = item.no + '  ' + item.text;
+  head.appendChild(tag);
+  head.appendChild(title);
+  box.appendChild(head);
+
+  const expect = document.createElement('div');
+  expect.className = 'ev-expect';
+  expect.textContent = '📌 预期：' + item.expect;
+  box.appendChild(expect);
+
+  const answerEl = document.createElement('div');
+  // 命中"资料中没有相关信息"即正确拒答 → 标绿
+  answerEl.className = 'ev-answer' + (answer.includes('资料中没有相关信息') ? ' refuse' : '');
+  answerEl.textContent = answer;
+  box.appendChild(answerEl);
+
+  const details = document.createElement('details');
+  details.className = 'sources';
+  const summary = document.createElement('summary');
+  summary.textContent = '📎 引用片段（' + sources.length + ' 段）';
+  details.appendChild(summary);
+  sources.forEach((src, i) => {
+    const s = document.createElement('div');
+    s.className = 'ev-src';
+    s.textContent = '[' + (i + 1) + '] ' + src;
+    details.appendChild(s);
+  });
+  box.appendChild(details);
+
+  return box;
+}
+
+/** 一题提问失败（网络/参数非法/没传 key）时的红色占位块 */
+function buildEvalError(item, message) {
+  const box = document.createElement('div');
+  box.className = 'ev-item';
+  const head = document.createElement('div');
+  head.className = 'ev-head';
+  head.textContent = item.no + '  ' + item.text;
+  const err = document.createElement('div');
+  err.className = 'err-box';
+  err.textContent = '❌ 提问失败：' + message;
+  box.appendChild(head);
+  box.appendChild(err);
+  return box;
 }
 </script>
 </body>

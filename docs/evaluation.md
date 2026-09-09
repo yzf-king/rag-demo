@@ -3,16 +3,26 @@
 > 目的：用固定问题集对比不同切分/检索参数下，RAG 的检索命中质量和回答质量。
 > 用法：改 `application.yml` 的 `rag.*` → **清空知识库重新上传** → 依次问 5 个问题 → 记录。
 
-## ⚠️ 每轮实验前必须做
+## ⚠️ 每轮实验前必须做（前端评测台已内置整套流程，见 static/index.html ④）
 
-改参数后旧 chunk 还在库里，不清理会污染结果：
+改参数后旧 chunk 还在库里，不清理会污染结果。推荐操作顺序（全部在页面上完成，**不用重启应用**）：
+1. 页面「① 检索参数」选预设 A/B/C 或自定义（chunk-size/chunk-overlap 上传时生效，top-k 提问时生效）
+2. 点「清空知识库」（等价于下面 SQL）
+3. 重新上传语料：基础题 Q1–Q5 用 `sample-knowledge.md`；扩展题 Q6–Q8 用 `sample-knowledge-extended.md`
+4. 「④ 评测台」一键逐题提问，每题自动展示引用片段，对照「📌 预期」自评命中与回答质量
 
-```bash
-docker exec rag-pg psql -U postgres -d ragdb -c "TRUNCATE knowledge;"
-# 然后重启应用、重新上传 sample-knowledge.md
-```
+命令行等价操作（接口/SQL）：
+- 清空：`POST /api/knowledge/clear`，或
+  ```bash
+  docker exec rag-pg psql -U postgres -d ragdb -c "TRUNCATE knowledge;"
+  ```
+- 带参数上传：`curl -F file=@sample-knowledge.md -F chunkSize=300 -F chunkOverlap=50 http://localhost:8081/api/knowledge/upload`
+- 带 top-k 提问：`curl -X POST http://localhost:8081/api/chat -H "Content-Type: application/json" -d '{"question":"...","topK":3}'`
 
-## 评估问题集（5 问）
+## 评估问题集（8 问）
+
+> Q1–Q5 针对基础语料 `sample-knowledge.md`（5 节）；Q6–Q8 针对扩展语料 `sample-knowledge-extended.md`（16 节、含数字/语义干扰项）。
+> 页面「④ 评测台」已内置本题库，一键即可逐题跑（每题带预期提示 + 引用片段）。
 
 | # | 问题 | 考察点 | 预期 |
 |---|---|---|---|
@@ -21,6 +31,9 @@ docker exec rag-pg psql -U postgres -d ragdb -c "TRUNCATE knowledge;"
 | Q3 | 我不想每天去公司坐班，能在家办公吗？ | **语义改写**（问题不含"远程/灵活办公"字样） | 命中办公段 |
 | Q4 | 公司裁员会赔几个月工资？ | 资料外 → 必须拒答 | "资料中没有相关信息" |
 | Q5 | 两万块的培训费用公司怎么报销？ | 部分覆盖（手册只说 2000 元内规则） | 只答 2000 元内规则，或明确说不含大额规则 |
+| Q6 | 公司兴趣小组一年能申请多少钱？ | 数字干扰（500 元经费 vs 500 元住宿） | 每季度上限 500 元（§16），别引成差旅段 |
+| Q7 | 试用期能申请远程办公吗？ | 细节考位（§8 末句的限制） | 不能，试用期内不开放 |
+| Q8 | 我得了大病能休多久？ | 跨段/长句检索（§5 医疗期） | 医疗期最长 12 个月 |
 
 ## 待测配置
 
