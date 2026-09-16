@@ -24,8 +24,8 @@ import reactor.core.publisher.Flux;
  * 离线链：ingest —— 文本 → 切分 chunk → 向量化 → 存入 pgvector
  * 在线链：ask   —— 问题 → 向量化 → 相似度检索 top-k → 拼 prompt → LLM 生成
  *
- * 切分目前用朴素的按段落/字符数切（最小版本先跑通），
- * 后续替换成正经 chunking 策略并对比效果（见 W2任务清单 9/6）。
+ * 切分策略见 split()：标题跟随正文 + 段落贪心打包 + 长段按句切分。
+ * 第一版是"段落超长才切"的朴素实现，实测发现 chunk-size 根本没生效（见 docs/evaluation.md）。
  */
 @Service
 public class RagService {
@@ -50,6 +50,12 @@ public class RagService {
      * 超出返回 400 InvalidParameter（9/5 实测踩坑）。留 2 条余量。
      */
     private static final int EMBED_BATCH_SIZE = 8;
+
+    /**
+     * 低于这个字数的块语义太弱（典型是文末一行"（完）"），不再单独入库——
+     * 单独成块只会占掉 top-k 名额，和第一版的"标题块污染"是同一类问题。
+     */
+    private static final int MIN_CHUNK_CHARS = 40;
 
     private final VectorStore vectorStore;
     private final ChatClient chatClient;
@@ -147,21 +153,108 @@ public class RagService {
     }
 
     /**
-     * 朴素切分（先跑通，勿深究）：按空行切成段落 → 超长段落再按字符数补切 → 相邻块保留 overlap。
+     * 切分策略（第二轮，替换第一版"段落永不合并"的朴素实现）。
+     *
+     * 第一版只在"单段长度 > chunk-size"时才切，而示例语料每段都短于最小档位（150），
+     * 于是 A/B/C 三组参数切出的是同一批块——**参数等于没生效**（docs/evaluation.md 结论 1）。
+     * 现在三条规则，让 cs 真正决定"一块装几段"：
+     *   ① 标题跟随正文：`## 标题` 不单独成块，与紧随其后的正文合并
+     *      （第一版里标题被切成独立小块，语义弱却稳定占 top-k 名额，即"标题块污染"，结论 2）
+     *   ② 段落贪心打包：按顺序累积段落，直到再加一段就要超过 cs 为止
+     *   ③ 单段超长：在句末标点处切（不切断句子），相邻片保留 co 字重叠
+     * 段落之间不留重叠：段落边界本身就是天然语义边界，把上一段尾巴带进下一块只是噪音。
      * cs/co 由 ingest 传入：可能是 yml 默认，也可能是前端评测台选的运行时参数。
      */
     private List<String> split(String text, int cs, int co) {
+        if (cs <= 0) throw new IllegalArgumentException("chunk-size 必须大于 0，当前：" + cs);
+        // ingest 已校验过，这里再挡一次：co >= cs 会让下面的切分循环原地打转
+        if (co < 0 || co >= cs) throw new IllegalArgumentException("chunk-overlap 需在 0~chunk-size 之间，当前：" + co);
         List<String> chunks = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        for (String block : toBlocks(text)) {
+            if (block.length() > cs) {
+                // 超长段落单独切：不跟已攒的小块混在一起，否则它的尾巴会把后面那段挤进同一个 chunk，边界变模糊
+                if (cur.length() > 0) {
+                    chunks.add(cur.toString());
+                    cur.setLength(0);
+                }
+                chunks.addAll(splitLongBlock(block, cs, co));
+                continue;
+            }
+            if (cur.length() > 0 && cur.length() + 1 + block.length() > cs) {
+                chunks.add(cur.toString());   // 装上这段就超了 → 先把前面这块落盘
+                cur.setLength(0);
+            }
+            if (cur.length() > 0) cur.append('\n');
+            cur.append(block);
+        }
+        if (cur.length() > 0) chunks.add(cur.toString());
+        return mergeTinyTail(chunks, cs);
+    }
+
+    /**
+     * 段落化 + 标题归并。整段只有一行且以 # 开头 → 判为标题行，攒着；
+     * 遇到正文段落就贴在它前面一起成块（标题单独成块正是"标题块污染"的来源）。
+     */
+    private List<String> toBlocks(String text) {
+        List<String> blocks = new ArrayList<>();
+        List<String> pendingHeadings = new ArrayList<>();
         for (String para : text.split("\\n\\s*\\n")) {
             String p = para.trim();
             if (p.isEmpty()) continue;
-            while (p.length() > cs) {
-                int cut = p.lastIndexOf('。', cs);
-                if (cut < cs / 2) cut = cs; // 找不到句号就硬切
-                chunks.add(p.substring(0, cut));
-                p = p.substring(Math.max(0, cut - co));
+            if (p.startsWith("#") && !p.contains("\n")) {
+                pendingHeadings.add(p);
+                continue;
             }
-            chunks.add(p);
+            if (!pendingHeadings.isEmpty()) {
+                p = String.join("\n", pendingHeadings) + "\n" + p;
+                pendingHeadings.clear();
+            }
+            blocks.add(p);
+        }
+        if (!pendingHeadings.isEmpty()) {   // 文末没有正文的孤标题：并进上一块，别丢内容
+            String last = String.join("\n", pendingHeadings);
+            if (blocks.isEmpty()) blocks.add(last);
+            else blocks.set(blocks.size() - 1, blocks.get(blocks.size() - 1) + "\n" + last);
+        }
+        return blocks;
+    }
+
+    /** 单段超长：从 cs 往回找句末标点当切点，找不到就硬切；相邻片重叠 co 字，避免把一句话切一半 */
+    private List<String> splitLongBlock(String block, int cs, int co) {
+        List<String> parts = new ArrayList<>();
+        String rest = block;
+        while (rest.length() > cs) {
+            int cut = sentenceCut(rest, cs);
+            parts.add(rest.substring(0, cut).trim());
+            rest = rest.substring(Math.max(0, cut - co));   // co < cs，所以每轮至少前进 cs-co 个字，不会死循环
+        }
+        if (!rest.isBlank()) parts.add(rest.trim());
+        return parts;
+    }
+
+    /** 在 (cs/2, cs] 区间里找最后一个句末标点（。！？；换行）当切点，整段没有就返回 cs 硬切 */
+    private int sentenceCut(String s, int cs) {
+        for (int i = cs; i > cs / 2; i--) {
+            switch (s.charAt(i - 1)) {
+                case '。', '！', '？', '；', '\n' -> {
+                    return i;
+                }
+                default -> { }
+            }
+        }
+        return cs;
+    }
+
+    /** 尾块过短（如文末一行"（完）"）就并进上一块——前提是并完不超 cs，绝不为了合并破坏块长上限 */
+    private List<String> mergeTinyTail(List<String> chunks, int cs) {
+        if (chunks.size() < 2) return chunks;
+        int last = chunks.size() - 1;
+        String tail = chunks.get(last);
+        String prev = chunks.get(last - 1);
+        if (tail.length() < MIN_CHUNK_CHARS && prev.length() + 1 + tail.length() <= cs) {
+            chunks.set(last - 1, prev + "\n" + tail);
+            chunks.remove(last);
         }
         return chunks;
     }
