@@ -259,6 +259,17 @@ public class RagService {
         return chunks;
     }
 
+    /**
+     * 只读检索：只回命中的原文片段和相似度，不调 LLM 生成。
+     * 用途一：Agent（作品 2）把它当工具调——检索归 RAG 服务，编排归 Agent 服务，职责分开。
+     * 用途二：调参时直接看"检索回来什么"，把检索质量和生成质量拆开判断。
+     */
+    public List<Hit> retrieve(String question, Integer topKOpt) {
+        return search(question, topKOpt).stream()
+                .map(d -> new Hit(d.getText(), d.getScore()))
+                .toList();
+    }
+
     /** 清空知识库（评测台切换切分参数/换语料前必须先清，防新旧 chunk 混检，见 docs/evaluation.md） */
     public int clear() {
         int existed = jdbcTemplate.queryForObject("SELECT count(*) FROM knowledge", Integer.class);
@@ -268,4 +279,7 @@ public class RagService {
 
     /** 流式问答结果：引用片段 + token 流 */
     public record StreamAskResult(List<String> sources, Flux<String> tokens) {}
+
+    /** 检索命中：原文片段 + 相似度分数（score 越大越相关，余弦距离下通常 0~1） */
+    public record Hit(String text, Double score) {}
 }

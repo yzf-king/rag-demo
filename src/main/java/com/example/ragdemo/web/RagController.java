@@ -22,6 +22,8 @@ import com.example.ragdemo.service.RagService;
  *                                  为空时用 yml 默认 —— 评测台选参数后不用重启应用
  *   POST /api/knowledge            {"text","chunkSize?","chunkOverlap?"}  纯文本入库（curl 调试用）
  *   POST /api/knowledge/clear      清空知识库（评测台切配置/换语料前必调，防新旧 chunk 混检）
+ *   POST /api/knowledge/search     {"question","topK?"}  只读检索（不生成），返回命中片段 + 相似度；
+ *                                  Agent（作品 2）把它当工具调
  *   GET  /api/chat/stream          ?question=...&topK=?  SSE 流式问答（逐字显示 + 引用）
  *   POST /api/chat                 {"question","topK?"}  同步问答（评测台逐题自动跑用）
  */
@@ -63,6 +65,12 @@ public class RagController {
     @PostMapping("/knowledge/clear")
     public ClearResult clearKnowledge() {
         return new ClearResult(ragService.clear());
+    }
+
+    /** 只读检索：给 Agent 当工具用（只回片段不生成），也方便单独调检索效果 */
+    @PostMapping("/knowledge/search")
+    public List<RagService.Hit> searchKnowledge(@RequestBody AskRequest request) {
+        return ragService.retrieve(request.question(), request.topK());
     }
 
     /** SSE 流式问答：先发 source 事件（命中片段，前端展示引用），再逐 token 发 token 事件 */
